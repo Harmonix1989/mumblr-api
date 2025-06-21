@@ -1,15 +1,13 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request
 from flask_cors import CORS
 import openai
 import os
 
-# Get API key from environment variable
+app = Flask(__name__)
+CORS(app)
+
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-app = Flask(__name__)
-CORS(app)  # Allow requests from frontend
-
-# System prompt for the assistant
 SYSTEM_PROMPT = """
 Mumblr expects input fields such as:
 - ‘transcription’: a phrase or line captured from the user’s vocal input.
@@ -26,15 +24,14 @@ Mumblr assumes no UI context—it acts as a backend service, producing high-qual
 def home():
     return "Mumblr API is live!"
 
-@app.route("/mumblr", methods=["POST"])
+@app.route('/mumblr', methods=['POST'])
 def generate_lyrics():
     try:
         data = request.get_json()
-
-        transcription = data.get("transcription", "")
-        mood = data.get("mood", "")
-        section = data.get("section", "")
-        story = data.get("story", "")
+        transcription = data.get('transcription', '')
+        mood = data.get('mood', '')
+        section = data.get('section', '')
+        story = data.get('story', '')
 
         prompt = f"""🧠Mood: {mood}
 Section: {section}
@@ -42,7 +39,7 @@ Story: {story}
 Transcribed Line: {transcription}
 Write lyrics only, no explanation."""
 
-        response = openai.ChatCompletion.create(
+        resp = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -51,11 +48,11 @@ Write lyrics only, no explanation."""
             temperature=0.8
         )
 
-        lyrics = response["choices"][0]["message"]["content"]
-        return jsonify({"lyrics": lyrics})
+        lyrics = resp['choices'][0]['message']['content']
+        return lyrics, 200, {'Content-Type': 'text/plain'}
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return {"error": str(e)}, 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
