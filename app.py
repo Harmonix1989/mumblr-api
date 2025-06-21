@@ -18,11 +18,9 @@ It returns **only completed lyrics as plain text**, crafted to match the mood, s
 
 Mumblr assumes no UI context—it acts as a backend service, producing high-quality lyrics based solely on the inputs it receives.
 """
-
 @app.route('/mumblr', methods=['POST'])
 def generate_lyrics():
     data = request.get_json()
-    print(data)
     transcription = data.get('transcription', '')
     mood = data.get('mood', '')
     section = data.get('section', '')
