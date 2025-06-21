@@ -20,29 +20,36 @@ Mumblr assumes no UI context—it acts as a backend service, producing high-qual
 """
 @app.route('/mumblr', methods=['POST'])
 def generate_lyrics():
-    data = request.get_json()
-    transcription = data.get('transcription', '')
-    mood = data.get('mood', '')
-    section = data.get('section', '')
-    story = data.get('story', '')
+    try:
+        data = request.get_json()
+        print("Received data:", data)
 
-    prompt = f"""🧠Mood: {mood}
+        transcription = data.get('transcription', '')
+        mood = data.get('mood', '')
+        section = data.get('section', '')
+        story = data.get('story', '')
+
+        prompt = f"""🧠Mood: {mood}
 Section: {section}
 Story: {story}
 Transcribed Line: {transcription}
 Write lyrics only, no explanation."""
 
-    resp = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.8
-    )
+        resp = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.8
+        )
 
-    lyrics = resp['choices'][0]['message']['content']
-    return lyrics, 200, {'Content-Type': 'text/plain'}
+        lyrics = resp['choices'][0]['message']['content']
+        return lyrics, 200, {'Content-Type': 'text/plain'}
+
+    except Exception as e:
+        print("Error:", str(e))
+        return "Error generating lyrics", 500
 
 @app.route("/")
 def home():
