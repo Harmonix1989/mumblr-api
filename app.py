@@ -2,6 +2,7 @@ from flask import Flask, request
 from flask_cors import CORS
 import openai
 import os
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = Flask(__name__)
 CORS(app)  # This enables CORS for all routes
