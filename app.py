@@ -22,6 +22,7 @@ Mumblr assumes no UI context—it acts as a backend service, producing high-qual
 @app.route('/mumblr', methods=['POST'])
 def generate_lyrics():
     data = request.get_json()
+    print(data)
     transcription = data.get('transcription', '')
     mood = data.get('mood', '')
     section = data.get('section', '')
