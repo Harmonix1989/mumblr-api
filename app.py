@@ -66,37 +66,31 @@ def generate_lyrics() -> tuple[Any, int, dict[str, str]]:
         section       = str(data.get("section", "")).strip()
         story         = str(data.get("story", "")).strip()
 
-        prompt = (
-            f"🧠 Mood: {mood}\n"
-            f"Section: {section}\n"
-            f"Story: {story}\n"
-            f"Transcribed Line: {transcription}\n"
-            f"Write lyrics only, no explanation."
-        )
+        # ---- new prompt build ----
+recordings = data.get("recordings", [])     # list[str] coming from Lovable
 
-        response = client.chat.completions.create(
-            model       = OPENAI_MODEL,
-            temperature = TEMPERATURE,
-            seed        = SEED,          # None ⇒ model behaves stochastically
-            messages    = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",    "content": prompt}
-            ],
-        )
+if isinstance(recordings, list) and recordings:
+    raw_lines    = [str(x).strip() for x in recordings if x]
+    mumble_block = "\n".join(f"- {l}" for l in raw_lines)
+else:                                       # fallback for one-line calls
+    raw_lines    = [transcription]
+    mumble_block = f"- {transcription}"
 
-        lyrics = response.choices[0].message.content
-        return lyrics, 200, {"Content-Type": "text/plain"}
+prompt = f"""
+You are Mumblr, an AI lyric-finisher.
 
-    except OpenAIError as oe:
-        # Error from the OpenAI API itself
-        return jsonify(error=str(oe)), 502
+### Raw takes
+{mumble_block}
 
-    except Exception as exc:
-        # Anything else (JSON parse, missing key, etc.)
-        return jsonify(error=str(exc)), 500
+### Requirements
+1. Keep **each line’s core words**.
+2. Improve rhyme & rhythm; you may adjust tense or add small fillers
+   (“oh”, “yeah”) **but don’t drop or replace the key nouns/verbs**.
+3. Return **exactly** {len(raw_lines)} numbered lines, nothing else.
 
-
-# ── local dev convenience ──────────────────────────────────────────────────
-if __name__ == "__main__":              # never executed on Render (gunicorn)
-    app.run(host="0.0.0.0", port=5000, debug=True)
-# ────────────────────────────────────────────────────────────────────────────
+### Context
+Mood:  {mood}
+Part:  {section}
+Story: {story or '(none)'}
+"""
+# ---- end new prompt build ----
