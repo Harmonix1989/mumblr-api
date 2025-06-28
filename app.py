@@ -1,11 +1,10 @@
-# ───────────────────────────────── app.py ──────────────────────────────────
+# ───────────────────────────── app.py ──────────────────────────────
 """
-Mumblr backend — Flask + openai-python ≥ 1.4
+Mumblr backend (Flask + openai-python ≥ 1.4)
 
-✓  Works with the new OpenAI client (openai.ChatCompletion is deprecated).
-✓  CORS enabled so any front-end (Lovable, local dev, etc.) can call it.
-✓  Optional deterministic seed – set SEED=42 in Render “Environment”.
-✓  Health-check route at “/” so Render shows the service as “Healthy”.
+• CORS enabled – any front-end can call it
+• Optional deterministic SEED (set SEED in Render env)
+• Health-check at “/”
 """
 
 from __future__ import annotations
@@ -17,66 +16,67 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from openai import OpenAI, OpenAIError
 
-# ── configuration ──────────────────────────────────────────────────────────
+# ── configuration ────────────────────────────────────────────────
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # set in Render → Environment
-OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")                  # ← change if you own GPT-4 access
-TEMPERATURE    = float(os.getenv("TEMPERATURE", "0.7"))
-SEED_STR       = os.getenv("SEED")          # leave unset for natural randomness
-SEED           = int(SEED_STR) if SEED_STR else None
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+TEMPERATURE = float(os.getenv("TEMPERATURE", "0.7"))
+SEED = int(os.getenv("SEED")) if os.getenv("SEED") else None
 
 SYSTEM_PROMPT = """
-Mumblr expects JSON with these keys:
-  • transcription – line captured from the user’s singing or humming
+Mumblr expects JSON with keys:
+  • transcription – line captured from the user’s vocal take
   • mood          – Breakup & Heartbreak, Party & Celebration, etc.
   • section       – Verse, Chorus, or Bridge
   • story         – OPTIONAL extra context
 
-The response must be **lyrics only**, plain text, no commentary.
-Maintain rhyme & syllabic flow appropriate to the chosen song section.
+Return **lyrics only** (plain text).  Keep rhyme & syllable flow.
 """
 
-# ── OpenAI client ──────────────────────────────────────────────────────────
+# ── OpenAI client ────────────────────────────────────────────────
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ── Flask app ──────────────────────────────────────────────────────────────
+# ── Flask app ────────────────────────────────────────────────────
 app = Flask(__name__)
-CORS(app)                       # allow any Origin (*) by default
+CORS(app)  # allow any Origin (*) by default
 
 
 @app.get("/")
 def home() -> tuple[str, int]:
-    """Health-check / sanity route."""
+    """Render health check."""
     return "Mumblr API is live!", 200
 
 
 @app.post("/mumblr")
 def generate_lyrics() -> tuple[Any, int, dict[str, str]]:
     """
-    Accepts a POST with JSON body:
-        {transcription, mood, section, story}
-
-    Returns:
-        Plain-text lyrics (200)  –or–
-        {"error": "..."}  (500)
+    POST JSON:
+        {
+          "transcription": "hey sugar what did you do",
+          "mood": "Struggle",
+          "section": "Verse",
+          "story": "...",
+          "recordings": ["line1", "line2", ...]   # ← optional list
+        }
     """
     try:
-        data          = request.get_json(force=True) or {}
+        data = request.get_json(force=True) or {}
+
         transcription = str(data.get("transcription", "")).strip()
-        mood          = str(data.get("mood", "")).strip()
-        section       = str(data.get("section", "")).strip()
-        story         = str(data.get("story", "")).strip()
+        mood = str(data.get("mood", "")).strip()
+        section = str(data.get("section", "")).strip()
+        story = str(data.get("story", "")).strip()
 
-        # ---- new prompt build ----
-recordings = data.get("recordings", [])     # list[str] coming from Lovable
+        # ---------- build prompt (inside the function!) -------------
+        recordings = data.get("recordings", [])
 
-if isinstance(recordings, list) and recordings:
-    raw_lines    = [str(x).strip() for x in recordings if x]
-    mumble_block = "\n".join(f"- {l}" for l in raw_lines)
-else:                                       # fallback for one-line calls
-    raw_lines    = [transcription]
-    mumble_block = f"- {transcription}"
+        if isinstance(recordings, list) and recordings:
+            raw_lines = [str(x).strip() for x in recordings if x]
+            mumble_block = "\n".join(f"- {l}" for l in raw_lines)
+        else:  # fallback for single-line calls
+            raw_lines = [transcription]
+            mumble_block = f"- {transcription}"
 
-prompt = f"""
+        prompt = f"""
 You are Mumblr, an AI lyric-finisher.
 
 ### Raw takes
@@ -93,4 +93,27 @@ Mood:  {mood}
 Part:  {section}
 Story: {story or '(none)'}
 """
-# ---- end new prompt build ----
+        # ---------- end prompt build --------------------------------
+
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=TEMPERATURE,
+            seed=SEED,  # None → natural randomness
+        )
+
+        lyrics = response.choices[0].message.content
+        return lyrics, 200, {"Content-Type": "text/plain"}
+
+    except OpenAIError as oe:
+        return jsonify(error=str(oe)), 500
+    except Exception as e:  # any other failure
+        return jsonify(error=str(e)), 500
+
+
+# ─────────────────── run locally (ignored by Gunicorn) ───────────
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
