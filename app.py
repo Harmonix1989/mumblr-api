@@ -1,89 +1,102 @@
+# ───────────────────────────────── app.py ──────────────────────────────────
 """
-Mumblr backend – Flask + OpenAI (SDK ≥ 1.0)
+Mumblr backend — Flask + openai-python ≥ 1.4
 
-Make sure your Render service has an environment variable:
-    OPENAI_API_KEY = sk-…             # your secret key
+✓  Works with the new OpenAI client (openai.ChatCompletion is deprecated).
+✓  CORS enabled so any front-end (Lovable, local dev, etc.) can call it.
+✓  Optional deterministic seed – set SEED=42 in Render “Environment”.
+✓  Health-check route at “/” so Render shows the service as “Healthy”.
 """
 
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from openai import OpenAI
+from __future__ import annotations
+
 import os
+from typing import Any
 
-# ---------------------------------------------------------------------
-# Flask setup
-# ---------------------------------------------------------------------
-app = Flask(__name__)
-CORS(app)  # allow all domains (frontend will work locally or on Netlify, Vercel, etc.)
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+from openai import OpenAI, OpenAIError
 
-# ---------------------------------------------------------------------
-# OpenAI client
-# ---------------------------------------------------------------------
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# ── configuration ──────────────────────────────────────────────────────────
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # set in Render → Environment
+OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")                  # ← change if you own GPT-4 access
+TEMPERATURE    = float(os.getenv("TEMPERATURE", "0.7"))
+SEED_STR       = os.getenv("SEED")          # leave unset for natural randomness
+SEED           = int(SEED_STR) if SEED_STR else None
 
-# ---------------------------------------------------------------------
-# System prompt the model always sees
-# ---------------------------------------------------------------------
 SYSTEM_PROMPT = """
-Mumblr expects input fields such as:
-• transcription – user’s sung or spoken line  
-• mood – e.g. “❤️ Breakup & Heartbreak”  
-• section – Verse / Chorus / Bridge  
-• story – optional narrative context
+Mumblr expects JSON with these keys:
+  • transcription – line captured from the user’s singing or humming
+  • mood          – Breakup & Heartbreak, Party & Celebration, etc.
+  • section       – Verse, Chorus, or Bridge
+  • story         – OPTIONAL extra context
 
-Return **lyrics only** (no commentary) that match the requested mood, section,
-and story.  Keep rhyme and syllable flow appropriate to modern pop songs.
+The response must be **lyrics only**, plain text, no commentary.
+Maintain rhyme & syllabic flow appropriate to the chosen song section.
 """
 
-# ---------------------------------------------------------------------
-# Health-check / root route
-# ---------------------------------------------------------------------
+# ── OpenAI client ──────────────────────────────────────────────────────────
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+# ── Flask app ──────────────────────────────────────────────────────────────
+app = Flask(__name__)
+CORS(app)                       # allow any Origin (*) by default
+
+
 @app.get("/")
-def home():
-    return "🎵 Mumblr API is live!"
+def home() -> tuple[str, int]:
+    """Health-check / sanity route."""
+    return "Mumblr API is live!", 200
 
-# ---------------------------------------------------------------------
-# Main generation route
-# ---------------------------------------------------------------------
+
 @app.post("/mumblr")
-def generate_lyrics():
+def generate_lyrics() -> tuple[Any, int, dict[str, str]]:
+    """
+    Accepts a POST with JSON body:
+        {transcription, mood, section, story}
+
+    Returns:
+        Plain-text lyrics (200)  –or–
+        {"error": "..."}  (500)
+    """
     try:
-        data = request.get_json(force=True)  # force=True → 400 if not JSON
+        data          = request.get_json(force=True) or {}
+        transcription = str(data.get("transcription", "")).strip()
+        mood          = str(data.get("mood", "")).strip()
+        section       = str(data.get("section", "")).strip()
+        story         = str(data.get("story", "")).strip()
 
-        transcription = data.get("transcription", "")
-        mood          = data.get("mood", "")
-        section       = data.get("section", "")
-        story         = data.get("story", "")
-
-        # Build the user prompt
         prompt = (
             f"🧠 Mood: {mood}\n"
             f"Section: {section}\n"
             f"Story: {story}\n"
-            f"Transcribed line: {transcription}\n\n"
-            "Write finished lyrics only, no explanation."
+            f"Transcribed Line: {transcription}\n"
+            f"Write lyrics only, no explanation."
         )
 
         response = client.chat.completions.create(
-            model="gpt-4o-mini",            # or "gpt-4o" / "gpt-4-turbo"
-            messages=[
+            model       = OPENAI_MODEL,
+            temperature = TEMPERATURE,
+            seed        = SEED,          # None ⇒ model behaves stochastically
+            messages    = [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": prompt}
+                {"role": "user",    "content": prompt}
             ],
-            temperature=0.8,
-            timeout=60,                     # seconds – optional
         )
 
-        lyrics = response.choices[0].message.content.strip()
+        lyrics = response.choices[0].message.content
         return lyrics, 200, {"Content-Type": "text/plain"}
 
-    except Exception as err:
-        # Log the error to Render logs and return JSON so the frontend sees something useful
-        app.logger.exception("Error in /mumblr")
-        return jsonify(error=str(err)), 500
+    except OpenAIError as oe:
+        # Error from the OpenAI API itself
+        return jsonify(error=str(oe)), 502
 
-# ---------------------------------------------------------------------
-# Run locally (Render ignores this block, but it’s handy for local testing)
-# ---------------------------------------------------------------------
-if __name__ == "__main__":
+    except Exception as exc:
+        # Anything else (JSON parse, missing key, etc.)
+        return jsonify(error=str(exc)), 500
+
+
+# ── local dev convenience ──────────────────────────────────────────────────
+if __name__ == "__main__":              # never executed on Render (gunicorn)
     app.run(host="0.0.0.0", port=5000, debug=True)
+# ────────────────────────────────────────────────────────────────────────────
