@@ -1,129 +1,153 @@
-# ─────────────────────────── app.py (full file) ────────────────────────────
+# ─────────────────────────────────── app.py ────────────────────────────────────
 """
-Mumblr backend — Flask  +  openai-python ≥ 1.4
+Mumblr backend  –  Flask  +  openai-python ≥ 1.4
 
-•  Accepts POST /mumblr  {transcription, mood, section, story, recordings?}
-•  Locks EACH output line to the same syllable-count as the singer’s line
-•  Supports deterministic runs via  SEED=42  env var.
-•  CORS enabled so any UI (Lovable, local dev, etc.) can call it.
+▸ Accepts POST /mumblr with JSON:
+      {
+        transcription : str      (ignored if "recordings" array supplied)
+        mood          : str      ("Breakup & Heartbreak", …)
+        section       : str      ("Verse", "Chorus", …)
+        story         : str      (optional free-text context)
+        recordings    : list[str]  ← array of raw phrases from Lovable
+      }
+
+▸ Returns **plain-text lyrics** – exactly one polished line for each raw line.
+
+▸ CORS enabled so any origin (Lovable preview, local dev, etc.) can call it.
+
+Set these in Render ► **Environment** (add new key / value rows):
+    OPENAI_API_KEY=<your key>
+    TEMPERATURE=0.7          # optional, default 0.7
+    OPENAI_MODEL=gpt-4o-mini # or gpt-4o, gpt-4-turbo, etc.
+    SEED=42                  # optional, for deterministic output
 """
 
 from __future__ import annotations
 
 import os
-import re
-from typing import Any
+from typing import Any, List
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from openai import OpenAI, OpenAIError
 
-# ─────────────────── configuration ─────────────────────────────────────────
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # ← already set in Render
+# ── configuration ──────────────────────────────────────────────────────────
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 TEMPERATURE    = float(os.getenv("TEMPERATURE", "0.7"))
-SEED_STR       = os.getenv("SEED")            # leave unset for randomness
+SEED_STR       = os.getenv("SEED")
 SEED           = int(SEED_STR) if SEED_STR else None
 
-# ─────────────────── helper: syllable counter ─────────────────────────────
-_vowels = re.compile(r"[aeiouy]+", re.I)
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY not set in environment")
 
-def syllable_count(line: str) -> int:
-    """
-    Very lightweight syllable estimate:
-    • groups of vowels are one syllable
-    • silent-e ('love') ignored unless the only vowel
-    """
-    chunks = _vowels.findall(line.lower())
-    count  = len([c for c in chunks if c != "e" or len(chunks) == 1])
-    return max(1, count)
+# ── system prompt ─────────────────────────────────────────────────────────
+SYSTEM_PROMPT = """
+You are Mumblr — an AI lyric-finisher for songwriters.
 
-# ─────────────────── OpenAI client ────────────────────────────────────────
+When you receive JSON you will be given:
+  • “recordings” – an array of raw sung or spoken phrases   (list[str])
+  • “mood”       – e.g. Breakup & Heartbreak, Party & Celebration, …
+  • “section”    – Verse, Chorus, Bridge, etc.
+  • “story”      – OPTIONAL extra context
+
+Your task:
+1. Produce **exactly one polished lyric line PER recording** – same order.
+2. Preserve each line’s core nouns & verbs (recognisable to the singer).
+3. Improve rhyme, rhythm, and grammar.  Small fillers allowed (“oh”, “yeah”).
+4. Do **NOT** merge two source lines together or split one apart.
+5. Output MUST be plain text, numbered **1. … 2. …** with no other commentary.
+
+Return nothing else.
+"""
+
+# ── OpenAI client ─────────────────────────────────────────────────────────
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ─────────────────── Flask app ────────────────────────────────────────────
+# ── Flask app ─────────────────────────────────────────────────────────────
 app = Flask(__name__)
-CORS(app)                                         # allow any Origin (*)
+CORS(app)   # allow all origins
+
 
 @app.get("/")
 def health() -> tuple[str, int]:
-    """Simple health-check for Render."""
+    """Simple health-check route so Render shows ‘Healthy’."""
     return "Mumblr API is live!", 200
 
+
 @app.post("/mumblr")
-def generate_lyrics() -> tuple[Any, int, dict[str, str]]:
-    """
-    POST body (JSON):
-        {
-          transcription : str    – first rough line (fallback),
-          mood          : str,
-          section       : str,    – Verse / Chorus / Bridge …
-          story         : str,    – optional context
-          recordings    : list[str]  – optional full array from Lovable
-        }
-    Response:
-        200  plain-text lyrics
-        500  {"error": "..."}
-    """
+def mumblr() -> tuple[Any, int, dict[str, str]]:
+    """Generate lyric lines from raw ‘recordings’ (or single transcription)."""
     try:
-        # 1) ─ grab & sanitize input ------------------------------------------------
-        data          = request.get_json(force=True) or {}
+        data = request.get_json(force=True) or {}
+
+        # 1️⃣ Gather raw lines -------------------------------------------------
+        recordings: List[str] = [
+            str(x).strip() for x in data.get("recordings", []) if str(x).strip()
+        ]
         transcription = str(data.get("transcription", "")).strip()
-        mood          = str(data.get("mood", "")).strip()
-        section       = str(data.get("section", "")).strip()
-        story         = str(data.get("story", "")).strip()
-        recordings    = data.get("recordings", [])
+        if not recordings and transcription:
+            recordings = [transcription]
 
-        if isinstance(recordings, list) and recordings:
-            raw_lines = [str(x).strip() for x in recordings if str(x).strip()]
-        else:                                  # fallback: single line
-            raw_lines = [transcription] if transcription else []
+        if not recordings:
+            return (
+                jsonify({"error": "No recordings / transcription provided."}),
+                400,
+                {"Content-Type": "application/json"},
+            )
 
-        if not raw_lines:
-            return jsonify(error="No lyric lines provided"), 400
+        mumble_block = "\n".join(f"- {line}" for line in recordings)
 
-        # 2) ─ build prompt with locked syllable counts ----------------------------
-        mumble_block = "\n".join(
-            f"- {txt}  ({syllable_count(txt)} syllables)" for txt in raw_lines
-        )
+        # 2️⃣ Build user prompt ----------------------------------------------
+        mood    = str(data.get("mood", "")).strip()
+        section = str(data.get("section", "")).strip()
+        story   = str(data.get("story", "")).strip() or "(none)"
 
-        prompt = f"""
-You are **Mumblr**, an AI lyric-finisher.
-
-### Raw takes  (with syllable counts)
+        user_prompt = f"""
+### Raw takes
 {mumble_block}
 
-### Requirements
-1. **Do NOT drop** the core nouns/verbs of each line.
-2. Match the **same syllable count** per line (±1 only if unavoidable).
-3. Improve rhyme & rhythm; small fillers (“oh”, “yeah”) are fine.
-4. Return **exactly {len(raw_lines)} numbered lines**, nothing else.
-
 ### Context
-Mood : {mood or '(none)'}
-Part : {section or '(none)'}
-Story: {story or '(none)'}
-"""
+Mood:    {mood}
+Section: {section}
+Story:   {story}
 
-        # 3) ─ call OpenAI -----------------------------------------------------------
-        chat_kwargs = dict(
-            model       = OPENAI_MODEL,
-            temperature = TEMPERATURE,
-            messages = [
-                {"role": "system", "content": "You are a professional lyricist."},
-                {"role": "user",   "content": prompt},
+### Instructions
+Finish each raw take into a polished lyric line following the Requirements.
+Return exactly {len(recordings)} numbered lines, nothing else.
+""".strip()
+
+        # 3️⃣ Call OpenAI -----------------------------------------------------
+        chat_args = dict(
+            model        = OPENAI_MODEL,
+            temperature  = TEMPERATURE,
+            messages     = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": user_prompt},
             ],
         )
-        if SEED is not None:                   # optional deterministic run
-            chat_kwargs["seed"] = SEED
+        if SEED is not None:
+            chat_args["seed"] = SEED  # deterministic
 
-        resp   = client.chat.completions.create(**chat_kwargs)
+        resp = client.chat.completions.create(**chat_args)
         lyrics = resp.choices[0].message.content.strip()
 
         return lyrics, 200, {"Content-Type": "text/plain"}
 
-    # ─── error handling ────────────────────────────────────────────────────
-    except OpenAIError as e:
-        return jsonify(error=f"OpenAI: {e}"), 500
-    except Exception as e:  # noqa: BLE001
-        return jsonify(error=str(e)), 500
+    except OpenAIError as oe:
+        return (
+            jsonify({"error": f"OpenAI API error: {oe}"}),
+            502,
+            {"Content-Type": "application/json"},
+        )
+    except Exception as e:
+        return (
+            jsonify({"error": f"Server error: {e}"}),
+            500,
+            {"Content-Type": "application/json"},
+        )
+
+
+# ── run locally (Render uses gunicorn, so this block is ignored there) ────
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
