@@ -11,7 +11,7 @@ from openai import OpenAI
 client             = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MODEL              = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 TEMPERATURE_SAFE   = float(os.getenv("TEMPERATURE", "0.4"))
-TEMPERATURE_FREE   = 0.6                         # when CREATIVE_MODE=1
+TEMPERATURE_FREE   = 0.7                         # when CREATIVE_MODE=1
 CREATIVE_MODE      = os.getenv("CREATIVE_MODE") == "1"
 SEED               = int(os.getenv("SEED")) if os.getenv("SEED") else None
 
